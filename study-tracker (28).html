@@ -6,6 +6,7 @@
 <title>StudySync ✓</title>
 <link href="https://fonts.googleapis.com/css2?family=Quicksand:wght@400;500;600;700&family=DM+Mono:wght@300;400;500&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
 :root {
   --bg: #fdf6f0;
@@ -1375,6 +1376,10 @@ header {
   </div>
   <div class="header-center"></div>
   <div class="header-right">
+    <div id="auth-bar" style="display:flex;align-items:center;gap:8px;">
+      <span id="auth-user-label" style="font-size:11px;color:var(--text-muted);font-weight:600;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></span>
+      <button class="pill-btn" id="auth-btn" onclick="handleAuth()" style="padding:7px 14px;font-size:12px;">Sign In</button>
+    </div>    
     <div class="quote-box" id="quote-box">
       <div class="quote-text" id="quote-text">Loading inspiration…</div>
       <div class="quote-author" id="quote-author"></div>
@@ -2327,6 +2332,12 @@ header {
 </div>
 
 <script>
+const { createClient } = supabase
+const db = createClient(
+  'https://YOUR_PROJECT.supabase.co',
+  'YOUR_ANON_KEY'
+)
+
 // ── STATE ──
 let state = {
   name: 'Friend',
@@ -2396,7 +2407,10 @@ const EMOJI_CATEGORIES = [
 ];
 
 // ── PERSISTENCE ──
-function save() { localStorage.setItem('studysync_v3', JSON.stringify(state)); }
+function save() {
+  localStorage.setItem('studysync_v3', JSON.stringify(state));
+  syncToCloud();
+}
 
 function load() {
   const raw = localStorage.getItem('studysync_v3');
@@ -6464,7 +6478,80 @@ function addExamPlanItemToWeek(weekLabel) {
   state.examPlan.push({ id: uid(), text: 'Study block', mins: 45, done: false, _week: weekLabel });
   save(); renderExamPlan();
 }
+// ── AUTH ──
+async function handleAuth() {
+  const { data: { user } } = await db.auth.getUser();
+  if (user) {
+    if (!confirm('Sign out?')) return;
+    await db.auth.signOut();
+    showToast('Signed out', 'info');
+  } else {
+    const email = prompt('Enter your email — we\'ll send you a magic link:');
+    if (!email) return;
+    const { error } = await db.auth.signInWithOtp({ email });
+    if (!error) showToast('Check your email for a login link! 📧', 'success');
+    else showToast('Error: ' + error.message, 'info');
+  }
+}
 
+async function syncToCloud() {
+  const { data: { user } } = await db.auth.getUser();
+  if (!user) return;
+  await db.from('studydata').upsert({
+    user_id: user.id,
+    data: state,
+    updated_at: new Date().toISOString()
+  });
+}
+
+async function loadFromCloud() {
+  const { data: { user } } = await db.auth.getUser();
+  if (!user) return;
+  const { data } = await db.from('studydata')
+    .select('data')
+    .eq('user_id', user.id)
+    .single();
+  if (data?.data) {
+    state = { ...state, ...data.data };
+    // re-render everything
+    renderUnits();
+    renderSessionLog();
+    renderChecklistBoard();
+    renderTimerUnits();
+    renderTimerPie();
+    renderCountdowns();
+    renderWeeklyTargets();
+    renderStreak();
+    updateQuokka();
+    refreshSmartSuggestion();
+    showToast('Data loaded from cloud ☁️', 'success');
+  }
+}
+
+function updateAuthUI(user) {
+  const lbl = document.getElementById('auth-user-label');
+  const btn = document.getElementById('auth-btn');
+  if (user) {
+    if (lbl) lbl.textContent = user.email;
+    if (btn) btn.textContent = 'Sign Out';
+  } else {
+    if (lbl) lbl.textContent = '';
+    if (btn) btn.textContent = 'Sign In';
+  }
+}
+
+async function initAuth() {
+  const { data: { user } } = await db.auth.getUser();
+  updateAuthUI(user);
+  if (user) await loadFromCloud();
+
+  db.auth.onAuthStateChange(async (event, session) => {
+    updateAuthUI(session?.user ?? null);
+    if (event === 'SIGNED_IN') {
+      await loadFromCloud();
+    }
+  });
+}
 // ── INIT ──
 load();
 loadTheme();
@@ -6503,6 +6590,7 @@ if (_qw) _qw.style.display = _qv ? '' : 'none';
 refreshSmartSuggestion();
 // Start time-of-day scene tick
 startTimeOfDayTick();
+initAuth();
 </script>
 </body>
 </html>
